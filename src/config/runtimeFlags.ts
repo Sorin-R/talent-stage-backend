@@ -17,3 +17,34 @@ export const isFeatureFlagEnabled = async (
     return fallback;
   }
 };
+
+export const getSystemSettingValue = async (
+  settingKey: string,
+  fallback: string
+): Promise<string> => {
+  try {
+    const [rows] = await pool.query<RowDataPacket[]>(
+      'SELECT setting_value FROM system_settings WHERE setting_key = ? LIMIT 1',
+      [settingKey]
+    );
+    const row = rows[0];
+    if (!row || row.setting_value === undefined || row.setting_value === null) return fallback;
+    const value = String(row.setting_value).trim();
+    return value === '' ? fallback : value;
+  } catch {
+    return fallback;
+  }
+};
+
+export const getSystemSettingNumber = async (
+  settingKey: string,
+  fallback: number,
+  bounds?: { min: number; max: number }
+): Promise<number> => {
+  const value = await getSystemSettingValue(settingKey, String(fallback));
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  const floored = Math.floor(parsed);
+  if (!bounds) return floored;
+  return Math.max(bounds.min, Math.min(bounds.max, floored));
+};

@@ -237,6 +237,7 @@ export const setupEnhancedAdminTables = async (): Promise<void> => {
       ['maintenance_mode',     0, 'Put the platform in maintenance mode'],
       ['shadow_ban_enabled',   1, 'Enable shadow ban functionality'],
       ['hybrid_recommendation_enabled', 1, 'Enable hybrid feed ranking + exploration'],
+      ['feed_swipe_timer_enabled', 1, 'Enable swipe countdown lock in feed'],
     ];
     for (const [key, val, desc] of flags) {
       const { v4: uid } = await import('uuid');
@@ -255,6 +256,13 @@ export const setupEnhancedAdminTables = async (): Promise<void> => {
       [uid(), 'hybrid_recommendation_enabled', 1, 'Enable hybrid feed ranking + exploration']
     );
   } catch { /* ignore */ }
+  try {
+    const { v4: uid } = await import('uuid');
+    await pool.query(
+      'INSERT IGNORE INTO feature_flags (id, flag_key, flag_value, description) VALUES (?, ?, ?, ?)',
+      [uid(), 'feed_swipe_timer_enabled', 1, 'Enable swipe countdown lock in feed']
+    );
+  } catch { /* ignore */ }
 
   // ── 16. Seed default system settings if empty ─────────────────
   const [setRows] = await pool.query<any[]>('SELECT COUNT(*) AS cnt FROM system_settings');
@@ -264,6 +272,7 @@ export const setupEnhancedAdminTables = async (): Promise<void> => {
       ['max_strikes_before_ban',  '3'],
       ['auto_ban_on_max_strikes', '1'],
       ['report_auto_hide_threshold', '5'],
+      ['feed_swipe_timer_seconds', '5'],
     ];
     for (const [key, val] of settings) {
       await pool.query(
@@ -273,6 +282,12 @@ export const setupEnhancedAdminTables = async (): Promise<void> => {
     }
     console.log('   System settings seeded');
   }
+  try {
+    await pool.query(
+      'INSERT IGNORE INTO system_settings (setting_key, setting_value) VALUES (?, ?)',
+      ['feed_swipe_timer_seconds', '5']
+    );
+  } catch { /* ignore */ }
 
   // ── 17. Fix collations on existing tables (idempotent) ─────────
   try {

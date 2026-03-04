@@ -6,7 +6,7 @@ import { testConnection } from './config/database';
 import { setupAdminTable } from './config/adminSetup';
 import { setupEnhancedAdminTables } from './config/adminEnhancedSetup';
 import { UPLOAD_DIR as RESOLVED_UPLOAD_DIR } from './middleware/upload';
-import { isFeatureFlagEnabled } from './config/runtimeFlags';
+import { getSystemSettingNumber, isFeatureFlagEnabled } from './config/runtimeFlags';
 import { purgeOverLimitVideos, ensureCycleColumns, purgeExpiredModerationHiddenVideos } from './controllers/videoController';
 import { purgeExpiredModerationHiddenComments } from './controllers/commentController';
 import authRoutes  from './routes/auth';
@@ -89,11 +89,25 @@ app.get('/api/maintenance', async (_req, res) => {
   });
 });
 
+// ── Public feed runtime config ───────────────────────────────
+app.get('/api/feed-config', async (_req, res) => {
+  const swipeTimerEnabled = await isFeatureFlagEnabled('feed_swipe_timer_enabled', true);
+  const swipeTimerSeconds = await getSystemSettingNumber('feed_swipe_timer_seconds', 5, { min: 0, max: 60 });
+  res.json({
+    success: true,
+    data: {
+      swipe_timer_enabled: swipeTimerEnabled,
+      swipe_timer_seconds: swipeTimerSeconds,
+    },
+  });
+});
+
 // ── Maintenance mode gate (blocks non-admin API when enabled) ─
 app.use(async (req, res, next) => {
   if (!req.path.startsWith('/api')) return next();
   if (req.path.startsWith('/api/admin')) return next();
   if (req.path === '/api/maintenance') return next();
+  if (req.path === '/api/feed-config') return next();
 
   const maintenanceOn = await isFeatureFlagEnabled('maintenance_mode', false);
   if (!maintenanceOn) return next();
