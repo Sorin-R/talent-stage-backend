@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import { testConnection } from './config/database';
 import { setupAdminTable } from './config/adminSetup';
 import { setupEnhancedAdminTables } from './config/adminEnhancedSetup';
+import { UPLOAD_DIR as RESOLVED_UPLOAD_DIR } from './middleware/upload';
 import { isFeatureFlagEnabled } from './config/runtimeFlags';
 import { purgeOverLimitVideos, ensureCycleColumns, purgeExpiredModerationHiddenVideos } from './controllers/videoController';
 import { purgeExpiredModerationHiddenComments } from './controllers/commentController';
@@ -48,8 +49,7 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ── Static files (uploaded media) ────────────────────────────
-const UPLOAD_DIR = process.env.UPLOAD_DIR || 'uploads';
-const uploadRoot = path.resolve(UPLOAD_DIR);
+const uploadRoot = path.resolve(RESOLVED_UPLOAD_DIR);
 
 // Serve videos with inline disposition so browser opens player instead of forcing download.
 app.use('/uploads/videos', express.static(path.join(uploadRoot, 'videos'), {
@@ -157,12 +157,21 @@ app.use(errorHandler);
 // ── Start ─────────────────────────────────────────────────────
 const start = async () => {
   await testConnection();
-  await setupAdminTable();
-  await setupEnhancedAdminTables();
-  await ensureCycleColumns();
-  await purgeOverLimitVideos();
-  await purgeExpiredModerationHiddenVideos();
-  await purgeExpiredModerationHiddenComments();
+
+  const runStartupStep = async (label: string, fn: () => Promise<any>) => {
+    try {
+      await fn();
+    } catch (err) {
+      console.warn(`⚠️  Startup step failed (${label}):`, (err as any)?.message || err);
+    }
+  };
+
+  await runStartupStep('setupAdminTable', setupAdminTable);
+  await runStartupStep('setupEnhancedAdminTables', setupEnhancedAdminTables);
+  await runStartupStep('ensureCycleColumns', ensureCycleColumns);
+  await runStartupStep('purgeOverLimitVideos', purgeOverLimitVideos);
+  await runStartupStep('purgeExpiredModerationHiddenVideos', purgeExpiredModerationHiddenVideos);
+  await runStartupStep('purgeExpiredModerationHiddenComments', purgeExpiredModerationHiddenComments);
 
   setInterval(() => {
     purgeExpiredModerationHiddenVideos().catch((err) => {

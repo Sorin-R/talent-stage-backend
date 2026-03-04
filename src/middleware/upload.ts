@@ -11,13 +11,45 @@ import { Request, Response, NextFunction } from 'express';
 import { v4 as uuid } from 'uuid';
 
 // ── Ensure upload directories exist ────────────────────────────
-export const UPLOAD_DIR = process.env.UPLOAD_DIR || 'uploads';
-export const DIRS = {
-  videos:     path.join(UPLOAD_DIR, 'videos'),
-  thumbnails: path.join(UPLOAD_DIR, 'thumbnails'),
-  avatars:    path.join(UPLOAD_DIR, 'avatars'),
+const ensureUploadDirs = (baseDir: string) => {
+  const dirs = {
+    videos: path.join(baseDir, 'videos'),
+    thumbnails: path.join(baseDir, 'thumbnails'),
+    avatars: path.join(baseDir, 'avatars'),
+  };
+  Object.values(dirs).forEach(d => fs.mkdirSync(d, { recursive: true }));
+  return dirs;
 };
-Object.values(DIRS).forEach(d => fs.mkdirSync(d, { recursive: true }));
+
+const resolveUploadDir = () => {
+  const configured = (process.env.UPLOAD_DIR || 'uploads').trim();
+  try {
+    ensureUploadDirs(configured);
+    return configured;
+  } catch (err) {
+    const fallback = path.resolve(process.cwd(), 'uploads');
+    try {
+      ensureUploadDirs(fallback);
+      console.warn(
+        `⚠️  UPLOAD_DIR "${configured}" is not writable; falling back to "${fallback}"`,
+        (err as any)?.message || err
+      );
+      return fallback;
+    } catch (fallbackErr) {
+      throw new Error(
+        `Unable to initialize upload directories for "${configured}" and fallback "${fallback}": ` +
+        `${(fallbackErr as any)?.message || fallbackErr}`
+      );
+    }
+  }
+};
+
+export const UPLOAD_DIR = resolveUploadDir();
+export const DIRS = {
+  videos: path.join(UPLOAD_DIR, 'videos'),
+  thumbnails: path.join(UPLOAD_DIR, 'thumbnails'),
+  avatars: path.join(UPLOAD_DIR, 'avatars'),
+};
 
 // ── Allowed MIME types ──────────────────────────────────────────
 const VIDEO_TYPES = new Set([
