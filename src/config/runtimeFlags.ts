@@ -48,3 +48,15 @@ export const getSystemSettingNumber = async (
   if (!bounds) return floored;
   return Math.max(bounds.min, Math.min(bounds.max, floored));
 };
+
+export const getSystemSettingFloat = async (
+  settingKey: string,
+  fallback: number,
+  bounds?: { min: number; max: number }
+): Promise<number> => {
+  const value = await getSystemSettingValue(settingKey, String(fallback));
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  if (!bounds) return parsed;
+  return Math.max(bounds.min, Math.min(bounds.max, parsed));
+};
