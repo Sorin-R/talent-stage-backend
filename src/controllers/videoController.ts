@@ -25,6 +25,21 @@ const VIDEO_EXTENSIONS = new Set([
   '.webm', '.m4v', '.mpg', '.mpeg', '.3gp', '.ts', '.mts',
 ]);
 
+const mimeTypeFromExt = (ext: string): string => {
+  switch (ext) {
+    case '.mp4':
+    case '.m4v': return 'video/mp4';
+    case '.mov': return 'video/quicktime';
+    case '.webm': return 'video/webm';
+    case '.avi': return 'video/x-msvideo';
+    case '.mpg':
+    case '.mpeg': return 'video/mpeg';
+    case '.3gp': return 'video/3gpp';
+    case '.mkv': return 'video/x-matroska';
+    default: return 'application/octet-stream';
+  }
+};
+
 const getMediaDurationSec = async (filePath: string): Promise<number> => {
   try {
     const { stdout } = await execFileAsync('ffprobe', [
@@ -86,7 +101,9 @@ const encodeShortsMp4 = async (
 };
 
 // Always convert uploads to Shorts MP4 (1080x1920). If size is over target, compress to ~25MB.
-const prepareShortsMp4 = async (filePath: string): Promise<{ filename: string; size: number }> => {
+const prepareShortsMp4 = async (
+  filePath: string,
+): Promise<{ filename: string; size: number; mimeType: string; transcoded: boolean }> => {
   const shortsAspect = SHORTS_WIDTH / SHORTS_HEIGHT;
   if (Math.abs(shortsAspect - TARGET_ASPECT) > 0.0001) {
     throw new Error(`Invalid shorts aspect config: ${shortsAspect} (expected ${TARGET_ASPECT})`);
@@ -100,52 +117,62 @@ const prepareShortsMp4 = async (filePath: string): Promise<{ filename: string; s
   }
 
   const inputSize = fs.statSync(filePath).size;
-  const durationSec = await getMediaDurationSec(filePath);
-  const initialOutName = `${uuid()}.mp4`;
-  const initialOutPath = path.join(path.dirname(filePath), initialOutName);
+  const inputFilename = path.basename(filePath);
 
-  // Convert all uploads to a standard Shorts format for predictable playback.
-  await encodeShortsMp4(filePath, initialOutPath, { useCrf: inputSize <= TARGET_SIZE_BYTES });
+  try {
+    const durationSec = await getMediaDurationSec(filePath);
+    const initialOutName = `${uuid()}.mp4`;
+    const initialOutPath = path.join(path.dirname(filePath), initialOutName);
 
-  let finalPath = initialOutPath;
-  let finalSize = fs.statSync(finalPath).size;
+    // Convert all uploads to a standard Shorts format for predictable playback.
+    await encodeShortsMp4(filePath, initialOutPath, { useCrf: inputSize <= TARGET_SIZE_BYTES });
 
-  const shouldCompress = inputSize > TARGET_SIZE_BYTES || finalSize > TARGET_SIZE_BYTES;
-  if (shouldCompress) {
-    let workingInput = finalPath;
-    let workingSize = finalSize;
-    const audioBitrate = 96_000;
+    let finalPath = initialOutPath;
+    let finalSize = fs.statSync(finalPath).size;
 
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      if (workingSize <= TARGET_SIZE_BYTES) break;
-      const compressOutPath = path.join(path.dirname(filePath), `${uuid()}.mp4`);
-      const targetTotalBitrate = Math.floor(((TARGET_SIZE_BYTES * 8) / Math.max(1, durationSec)) * (attempt === 0 ? 0.92 : 0.82));
-      const targetVideoBitrate = Math.max(250_000, targetTotalBitrate - audioBitrate);
+    const shouldCompress = inputSize > TARGET_SIZE_BYTES || finalSize > TARGET_SIZE_BYTES;
+    if (shouldCompress) {
+      let workingInput = finalPath;
+      let workingSize = finalSize;
+      const audioBitrate = 96_000;
 
-      await encodeShortsMp4(workingInput, compressOutPath, {
-        targetVideoBitrate,
-        audioBitrate,
-      });
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        if (workingSize <= TARGET_SIZE_BYTES) break;
+        const compressOutPath = path.join(path.dirname(filePath), `${uuid()}.mp4`);
+        const targetTotalBitrate = Math.floor(((TARGET_SIZE_BYTES * 8) / Math.max(1, durationSec)) * (attempt === 0 ? 0.92 : 0.82));
+        const targetVideoBitrate = Math.max(250_000, targetTotalBitrate - audioBitrate);
 
-      if (workingInput !== filePath && fs.existsSync(workingInput)) fs.unlinkSync(workingInput);
-      workingInput = compressOutPath;
-      workingSize = fs.statSync(workingInput).size;
+        await encodeShortsMp4(workingInput, compressOutPath, {
+          targetVideoBitrate,
+          audioBitrate,
+        });
+
+        if (workingInput !== filePath && fs.existsSync(workingInput)) fs.unlinkSync(workingInput);
+        workingInput = compressOutPath;
+        workingSize = fs.statSync(workingInput).size;
+      }
+
+      finalPath = workingInput;
+      finalSize = workingSize;
     }
 
-    finalPath = workingInput;
-    finalSize = workingSize;
+    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    const finalFilename = path.basename(finalPath);
+    return { filename: finalFilename, size: finalSize, mimeType: 'video/mp4', transcoded: true };
+  } catch (err) {
+    // Keep uploads working even when ffmpeg/ffprobe isn't available on host.
+    const fallbackSize = fs.statSync(filePath).size;
+    console.warn(
+      `⚠️  Shorts conversion failed for ${inputFilename}; keeping original file.`,
+      (err as Error)?.message || err
+    );
+    return {
+      filename: inputFilename,
+      size: fallbackSize,
+      mimeType: mimeTypeFromExt(ext),
+      transcoded: false,
+    };
   }
-
-  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-
-  // Keep exactly one output file.
-  const finalFilename = path.basename(finalPath);
-  const expectedPath = path.join(path.dirname(filePath), finalFilename);
-  if (finalPath !== expectedPath && fs.existsSync(finalPath)) {
-    fs.renameSync(finalPath, expectedPath);
-  }
-
-  return { filename: finalFilename, size: finalSize };
 };
 
 // ─── Helpers ──────────────────────────────────────────────────
@@ -555,6 +582,7 @@ export const uploadVideo = async (
     const processed = await prepareShortsMp4(videoFile.path);
     const finalFilename = processed.filename;
     const finalSize     = processed.size;
+    const finalMimeType = processed.mimeType;
     const finalPath     = path.join(path.dirname(videoFile.path), finalFilename);
 
     await pool.query(
@@ -572,7 +600,7 @@ export const uploadVideo = async (
         videoFile.originalname,
         finalPath,
         finalSize,
-        'video/mp4',
+        finalMimeType,
         thumbFilename,
         talent_type || null,
         is_public === 'false' || is_public === '0' ? 0 : 1,
