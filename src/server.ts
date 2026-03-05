@@ -94,12 +94,14 @@ app.get('/api/feed-config', async (_req, res) => {
   const swipeTimerEnabled = await isFeatureFlagEnabled('feed_swipe_timer_enabled', true);
   const swipeTimerSeconds = await getSystemSettingNumber('feed_swipe_timer_seconds', 5, { min: 0, max: 60 });
   const swipeTimerOpacity = await getSystemSettingFloat('feed_swipe_timer_opacity', 0.75, { min: 0.05, max: 1 });
+  const swipeTimerVisible = await getSystemSettingNumber('feed_swipe_timer_visible', 1, { min: 0, max: 1 });
   res.json({
     success: true,
     data: {
       swipe_timer_enabled: swipeTimerEnabled,
       swipe_timer_seconds: swipeTimerSeconds,
       swipe_timer_opacity: swipeTimerOpacity,
+      swipe_timer_visible: swipeTimerVisible === 1,
     },
   });
 });
