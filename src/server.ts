@@ -6,7 +6,7 @@ import { testConnection } from './config/database';
 import { setupAdminTable } from './config/adminSetup';
 import { setupEnhancedAdminTables } from './config/adminEnhancedSetup';
 import { UPLOAD_DIR as RESOLVED_UPLOAD_DIR } from './middleware/upload';
-import { getSystemSettingFloat, getSystemSettingNumber, isFeatureFlagEnabled } from './config/runtimeFlags';
+import { getSystemSettingFloat, getSystemSettingNumber, getSystemSettingValue, isFeatureFlagEnabled } from './config/runtimeFlags';
 import { purgeOverLimitVideos, ensureCycleColumns, purgeExpiredModerationHiddenVideos } from './controllers/videoController';
 import { purgeExpiredModerationHiddenComments } from './controllers/commentController';
 import authRoutes  from './routes/auth';
@@ -92,13 +92,18 @@ app.get('/api/maintenance', async (_req, res) => {
 // ── Public feed runtime config ───────────────────────────────
 app.get('/api/feed-config', async (_req, res) => {
   const swipeTimerEnabled = await isFeatureFlagEnabled('feed_swipe_timer_enabled', true);
-  const swipeTimerSeconds = await getSystemSettingNumber('feed_swipe_timer_seconds', 5, { min: 0, max: 60 });
+  const rawSwipeTimerMs = Number(await getSystemSettingValue('feed_swipe_timer_ms', ''));
+  const swipeTimerMs = Number.isFinite(rawSwipeTimerMs)
+    ? Math.max(0, Math.min(60000, Math.floor(rawSwipeTimerMs)))
+    : (await getSystemSettingNumber('feed_swipe_timer_seconds', 5, { min: 0, max: 60 })) * 1000;
+  const swipeTimerSeconds = Math.floor(swipeTimerMs / 1000);
   const swipeTimerOpacity = await getSystemSettingFloat('feed_swipe_timer_opacity', 0.75, { min: 0.05, max: 1 });
   const swipeTimerVisible = await getSystemSettingNumber('feed_swipe_timer_visible', 1, { min: 0, max: 1 });
   res.json({
     success: true,
     data: {
       swipe_timer_enabled: swipeTimerEnabled,
+      swipe_timer_ms: swipeTimerMs,
       swipe_timer_seconds: swipeTimerSeconds,
       swipe_timer_opacity: swipeTimerOpacity,
       swipe_timer_visible: swipeTimerVisible === 1,

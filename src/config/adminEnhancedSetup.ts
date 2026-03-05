@@ -272,6 +272,7 @@ export const setupEnhancedAdminTables = async (): Promise<void> => {
       ['max_strikes_before_ban',  '3'],
       ['auto_ban_on_max_strikes', '1'],
       ['report_auto_hide_threshold', '5'],
+      ['feed_swipe_timer_ms', '5000'],
       ['feed_swipe_timer_seconds', '5'],
       ['feed_swipe_timer_opacity', '0.75'],
       ['feed_swipe_timer_visible', '1'],
@@ -284,6 +285,12 @@ export const setupEnhancedAdminTables = async (): Promise<void> => {
     }
     console.log('   System settings seeded');
   }
+  try {
+    await pool.query(
+      'INSERT IGNORE INTO system_settings (setting_key, setting_value) VALUES (?, ?)',
+      ['feed_swipe_timer_ms', '5000']
+    );
+  } catch { /* ignore */ }
   try {
     await pool.query(
       'INSERT IGNORE INTO system_settings (setting_key, setting_value) VALUES (?, ?)',
