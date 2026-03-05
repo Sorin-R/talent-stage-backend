@@ -14,47 +14,138 @@ import { safeTrackVideoEvent, type RecoEventType } from '../services/recommendat
 const execFileAsync = promisify(execFile);
 const TITLE_MAX_LENGTH = 200;
 const DESCRIPTION_MAX_LENGTH = 1000;
+const SHORTS_WIDTH = 1080;
+const SHORTS_HEIGHT = 1920;
+const TARGET_SIZE_MB = 25;
+const TARGET_SIZE_BYTES = TARGET_SIZE_MB * 1024 * 1024;
+const TARGET_ASPECT = 9 / 16;
+const AUDIO_EXTENSIONS = new Set(['.mp3', '.wav', '.aac', '.m4a', '.flac', '.ogg']);
+const VIDEO_EXTENSIONS = new Set([
+  '.mp4', '.mov', '.avi', '.mkv', '.wmv', '.flv',
+  '.webm', '.m4v', '.mpg', '.mpeg', '.3gp', '.ts', '.mts',
+]);
 
-// Transcode to H.264 if codec is not Safari-compatible (av1, vp8, vp9, etc.)
-const ensureH264 = async (filePath: string): Promise<{ filename: string; size: number }> => {
-  const ext = path.extname(filePath).toLowerCase();
-  let codec = 'unknown';
-
-  // Probe codec (best-effort)
+const getMediaDurationSec = async (filePath: string): Promise<number> => {
   try {
     const { stdout } = await execFileAsync('ffprobe', [
-      '-v', 'quiet', '-select_streams', 'v:0',
-      '-show_entries', 'stream=codec_name',
-      '-of', 'csv=p=0', filePath,
+      '-v', 'error',
+      '-show_entries', 'format=duration',
+      '-of', 'default=noprint_wrappers=1:nokey=1',
+      filePath,
     ]);
-    codec = String(stdout || '').trim().toLowerCase() || 'unknown';
+    const parsed = Number(String(stdout || '').trim());
+    if (!Number.isFinite(parsed) || parsed <= 0) return 1;
+    return parsed;
   } catch {
-    codec = 'unknown';
+    return 1;
+  }
+};
+
+const encodeShortsMp4 = async (
+  inputPath: string,
+  outputPath: string,
+  opts: { targetVideoBitrate?: number; audioBitrate?: number; useCrf?: boolean } = {},
+): Promise<void> => {
+  const {
+    targetVideoBitrate,
+    audioBitrate = 128_000,
+    useCrf = false,
+  } = opts;
+  const vf = `scale=${SHORTS_WIDTH}:${SHORTS_HEIGHT}:force_original_aspect_ratio=decrease,pad=${SHORTS_WIDTH}:${SHORTS_HEIGHT}:(ow-iw)/2:(oh-ih)/2,setsar=1`;
+
+  const args = [
+    '-i', inputPath,
+    '-vf', vf,
+    '-r', '30',
+    '-c:v', 'libx264',
+    '-pix_fmt', 'yuv420p',
+  ];
+
+  if (useCrf || !targetVideoBitrate) {
+    args.push('-preset', 'medium', '-crf', '23');
+  } else {
+    const safeVideoBitrate = Math.max(250_000, Math.floor(targetVideoBitrate));
+    args.push(
+      '-preset', 'medium',
+      '-b:v', String(safeVideoBitrate),
+      '-maxrate', String(Math.floor(safeVideoBitrate * 1.08)),
+      '-bufsize', String(Math.floor(safeVideoBitrate * 2)),
+    );
   }
 
-  // Keep as-is only if already H.264 in MP4 container.
-  if (codec === 'h264' && ext === '.mp4') {
-    return { filename: path.basename(filePath), size: fs.statSync(filePath).size };
+  args.push(
+    '-c:a', 'aac',
+    '-b:a', String(Math.max(48_000, Math.floor(audioBitrate))),
+    '-ar', '44100',
+    '-movflags', '+faststart',
+    '-y',
+    outputPath,
+  );
+
+  await execFileAsync('ffmpeg', args);
+};
+
+// Always convert uploads to Shorts MP4 (1080x1920). If size is over target, compress to ~25MB.
+const prepareShortsMp4 = async (filePath: string): Promise<{ filename: string; size: number }> => {
+  const shortsAspect = SHORTS_WIDTH / SHORTS_HEIGHT;
+  if (Math.abs(shortsAspect - TARGET_ASPECT) > 0.0001) {
+    throw new Error(`Invalid shorts aspect config: ${shortsAspect} (expected ${TARGET_ASPECT})`);
+  }
+  const ext = path.extname(filePath).toLowerCase();
+  if (AUDIO_EXTENSIONS.has(ext)) {
+    throw new Error('Audio-only uploads are not supported. Please upload a video file.');
+  }
+  if (!VIDEO_EXTENSIONS.has(ext)) {
+    throw new Error(`Unsupported video extension: ${ext || '(none)'}`);
   }
 
-  // Normalize to MP4 + H.264 for consistent browser playback.
-  const outName = uuid() + '.mp4';
-  const outPath = path.join(path.dirname(filePath), outName);
-  try {
-    console.log(`🎬  Normalizing ${path.basename(filePath)} (${codec}/${ext || 'unknown'}) → h264/mp4...`);
-    await execFileAsync('ffmpeg', [
-      '-i', filePath,
-      '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
-      '-c:a', 'aac', '-b:a', '128k',
-      '-movflags', '+faststart',
-      '-y', outPath,
-    ]);
-    fs.unlinkSync(filePath); // remove original
-    return { filename: outName, size: fs.statSync(outPath).size };
-  } catch (err) {
-    console.warn(`⚠️  Video normalization failed, keeping original file: ${path.basename(filePath)}`);
-    return { filename: path.basename(filePath), size: fs.statSync(filePath).size };
+  const inputSize = fs.statSync(filePath).size;
+  const durationSec = await getMediaDurationSec(filePath);
+  const initialOutName = `${uuid()}.mp4`;
+  const initialOutPath = path.join(path.dirname(filePath), initialOutName);
+
+  // Convert all uploads to a standard Shorts format for predictable playback.
+  await encodeShortsMp4(filePath, initialOutPath, { useCrf: inputSize <= TARGET_SIZE_BYTES });
+
+  let finalPath = initialOutPath;
+  let finalSize = fs.statSync(finalPath).size;
+
+  const shouldCompress = inputSize > TARGET_SIZE_BYTES || finalSize > TARGET_SIZE_BYTES;
+  if (shouldCompress) {
+    let workingInput = finalPath;
+    let workingSize = finalSize;
+    const audioBitrate = 96_000;
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (workingSize <= TARGET_SIZE_BYTES) break;
+      const compressOutPath = path.join(path.dirname(filePath), `${uuid()}.mp4`);
+      const targetTotalBitrate = Math.floor(((TARGET_SIZE_BYTES * 8) / Math.max(1, durationSec)) * (attempt === 0 ? 0.92 : 0.82));
+      const targetVideoBitrate = Math.max(250_000, targetTotalBitrate - audioBitrate);
+
+      await encodeShortsMp4(workingInput, compressOutPath, {
+        targetVideoBitrate,
+        audioBitrate,
+      });
+
+      if (workingInput !== filePath && fs.existsSync(workingInput)) fs.unlinkSync(workingInput);
+      workingInput = compressOutPath;
+      workingSize = fs.statSync(workingInput).size;
+    }
+
+    finalPath = workingInput;
+    finalSize = workingSize;
   }
+
+  if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+
+  // Keep exactly one output file.
+  const finalFilename = path.basename(finalPath);
+  const expectedPath = path.join(path.dirname(filePath), finalFilename);
+  if (finalPath !== expectedPath && fs.existsSync(finalPath)) {
+    fs.renameSync(finalPath, expectedPath);
+  }
+
+  return { filename: finalFilename, size: finalSize };
 };
 
 // ─── Helpers ──────────────────────────────────────────────────
@@ -460,10 +551,10 @@ export const uploadVideo = async (
 
     const id = uuid();
 
-    // Transcode to H.264 if needed (AV1/VP9/WebM won't play on iPhone Safari)
-    const transcoded = await ensureH264(videoFile.path);
-    const finalFilename = transcoded.filename;
-    const finalSize     = transcoded.size;
+    // Convert to standardized Shorts MP4 and compress if >25MB.
+    const processed = await prepareShortsMp4(videoFile.path);
+    const finalFilename = processed.filename;
+    const finalSize     = processed.size;
     const finalPath     = path.join(path.dirname(videoFile.path), finalFilename);
 
     await pool.query(
