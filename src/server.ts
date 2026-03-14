@@ -50,6 +50,21 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ── Static files (uploaded media) ────────────────────────────
 const uploadRoot = path.resolve(RESOLVED_UPLOAD_DIR);
+const STREAM_FILENAME_PREFIX = 'cfstream:';
+
+// Backward-compat for legacy links stored as /uploads/videos/cfstream:<uid>.
+// Redirect them to Cloudflare Stream player so old admin links still open.
+app.get('/uploads/videos/:filename', (req, res, next) => {
+  const raw = String(req.params.filename || '');
+  const decoded = decodeURIComponent(raw);
+  if (!decoded.startsWith(STREAM_FILENAME_PREFIX)) return next();
+
+  const uid = decoded.slice(STREAM_FILENAME_PREFIX.length).trim();
+  if (!uid) return next();
+
+  res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
+  return res.redirect(302, `https://iframe.videodelivery.net/${uid}`);
+});
 
 // Serve videos with inline disposition so browser opens player instead of forcing download.
 app.use('/uploads/videos', express.static(path.join(uploadRoot, 'videos'), {
